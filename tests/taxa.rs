@@ -1,37 +1,48 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 
 use rusqlite::Connection;
 
-fn fixture(root: &Path, metadata: &str, filenames: &[&str]) -> PathBuf {
+fn fixture(root: &Path, metadata: &str, filenames: &[&str], taxon_column: &str) -> PathBuf {
     fs::create_dir_all(root.join("metadata")).unwrap();
     fs::create_dir_all(root.join("msdata/raw")).unwrap();
     fs::write(root.join("metadata/metadata.tsv"), metadata).unwrap();
+    fs::write(root.join("taxon.toml"), format!("[dataset]\ntaxon_column = {taxon_column:?}\n")).unwrap();
     for filename in filenames {
         fs::write(root.join("msdata/raw").join(filename), "spectrum").unwrap();
     }
     root.join("flock.sqlite")
 }
 
-fn try_ingest(root: &Path, db: &Path) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_peregrino"))
-        .args([
-            "ingest",
-            root.to_str().unwrap(),
-            "--doi",
-            "10.5281/zenodo.10018264",
-        ])
-        .args([
-            "--metadata",
-            "metadata/metadata.tsv",
-            "--ms-dir",
-            "msdata/raw",
-            "--db",
-        ])
+fn try_ingest(root: &Path, db: &Path) -> Output {
+    ingest_with_config(root, db, &root.join("taxon.toml"), None)
+}
+
+fn ingest_with_config(root: &Path, db: &Path, config: &Path, selection: Option<&str>) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_peregrino"));
+    command
+        .arg("ingest")
+        .arg(root)
+        .args(["--doi", "10.5281/zenodo.10018264"])
+        .args(["--metadata", "metadata/metadata.tsv", "--ms-dir", "msdata/raw"])
+        .arg("--db")
         .arg(db)
-        .output()
-        .unwrap()
+        .arg("--config")
+        .arg(config);
+    if let Some(selection) = selection {
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(selection.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    } else {
+        command.output().unwrap()
+    }
 }
 
 fn ingest(root: &Path, db: &Path) {
@@ -71,6 +82,7 @@ fn massive_scientific_names_link_taxa_without_losing_metadata() {
         root,
         "filename\tfile_path\tdirectus_filename\ttaxon_scientific_name\tionization_mode\npositive.mzML\tdbgi_msdata/positive.mzML\tpositive\t Sapayoa aenigma \tpositive\nnegative.mzML\tdbgi_msdata/negative.mzML\tnegative\tSapayoa aenigma\tnegative\nblank.mzML\tdbgi_msdata/blank.mzML\tblank\t  \tpositive\n",
         &["positive.mzML", "negative.mzML", "blank.mzML"],
+        "taxon_scientific_name",
     );
     ingest(root, &db);
     let conn = Connection::open(&db).unwrap();
@@ -116,6 +128,7 @@ fn biological_samples_share_taxon_while_qc_and_blanks_have_no_taxon() {
         root,
         "sample_id\tsample_type\tfilename\tsource_taxon\nA\tsample\ta.mzML\tDatura stramonium\nB\tsample\tb.mzML\t Datura stramonium \n\tqc\tc.mzML\t\nBLANK\tblank\td.mzML\t  \n",
         &["a.mzML", "b.mzML", "c.mzML", "d.mzML"],
+        "source_taxon",
     );
     ingest(root, &db);
     let conn = Connection::open(&db).unwrap();
@@ -185,6 +198,7 @@ fn existing_flock_database_migrates_and_accepts_taxon_name_column() {
         root,
         "sample_id\tsample_type\tfilename\ttaxon_name\nA\tsample\ta.mzML\tDatura stramonium\n\tqc\tb.mzML\t\n",
         &["a.mzML", "b.mzML"],
+        "taxon_name",
     );
     let conn = Connection::open(&db).unwrap();
     conn.execute_batch("CREATE TABLE sample_rows (dataset_id INTEGER NOT NULL REFERENCES datasets(id) ON DELETE CASCADE, row_number INTEGER NOT NULL, sample_id TEXT, attributes_json TEXT NOT NULL CHECK (json_valid(attributes_json)), PRIMARY KEY (dataset_id, row_number));").unwrap();
@@ -203,4 +217,106 @@ fn existing_flock_database_migrates_and_accepts_taxon_name_column() {
     assert_eq!(links(&conn)[1], (None, "qc".into(), None));
     ingest(root, &db);
     assert_eq!(taxa(&conn).len(), 1);
+}
+
+#[test]
+fn prompts_for_every_header_and_reuses_exact_saved_nonpreferred_choice() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("dataset");
+    let db = fixture(
+        &root,
+        "sample_id\tfilename\tsource_taxon\tscientific_name\tOther Species\nA\ta.mzML\tWrong first\tWrong second\tChosen species\n",
+        &["a.mzML"],
+        "source_taxon",
+    );
+    fs::remove_file(root.join("taxon.toml")).unwrap();
+    let config = temp.path().join("settings/peregrino.toml");
+    let result = ingest_with_config(&root, &db, &config, Some("5\n"));
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let prompt = String::from_utf8(result.stderr).unwrap();
+    for (number, header) in ["sample_id", "filename", "source_taxon", "scientific_name", "Other Species"].iter().enumerate() {
+        assert!(prompt.contains(&format!("{}. {}", number + 1, header)), "{prompt}");
+    }
+    assert_eq!(fs::read_to_string(&config).unwrap(), "[dataset]\ntaxon_column = \"Other Species\"\n");
+    let conn = Connection::open(&db).unwrap();
+    assert_eq!(taxa(&conn)[0].1, "Chosen species");
+
+    fs::write(root.join("metadata/metadata.tsv"), "sample_id\tfilename\tsource_taxon\tscientific_name\tOther Species\nA\ta.mzML\tStill wrong\tAlso wrong\tSaved species\n").unwrap();
+    let rerun = ingest_with_config(&root, &db, &config, None);
+    assert!(rerun.status.success(), "{}", String::from_utf8_lossy(&rerun.stderr));
+    assert_eq!(taxa(&conn).iter().map(|(_, name)| name.as_str()).collect::<Vec<_>>(), ["Saved species"]);
+    assert!(!root.join("taxon.toml").exists());
+}
+
+#[test]
+fn missing_or_nonexact_configured_column_never_mutates_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("dataset");
+    let db = fixture(
+        &root,
+        "sample_id\tfilename\tOther Species\nA\ta.mzML\tChosen species\n",
+        &["a.mzML"],
+        "Other Species",
+    );
+    ingest(&root, &db);
+    let conn = Connection::open(&db).unwrap();
+    let before = taxa(&conn);
+    let config = temp.path().join("mato.toml");
+    for contents in [
+        "[dataset]\ntaxon_column = \"other species\"\n",
+        "[dataset]\ntaxon_column = \"absent\"\n",
+        "[dataset]\ntaxon_column = \"\"\n",
+        "[dataset]\nname = \"dataset\"\n",
+        "[dataset]\ntaxon_column = 42\n",
+    ] {
+        fs::write(&config, contents).unwrap();
+        let failed = ingest_with_config(&root, &db, &config, None);
+        assert!(!failed.status.success(), "{contents}");
+        let error = String::from_utf8_lossy(&failed.stderr);
+        assert!(error.contains("taxon column") || error.contains("taxon_column"), "{error}");
+        assert_eq!(taxa(&conn), before);
+    }
+    fs::write(&config, "[dataset]\ntaxon_column = \"Other Species\"\n[repository]\nurl = \"unrelated\"\n").unwrap();
+    assert!(ingest_with_config(&root, &db, &config, None).status.success());
+    assert_eq!(taxa(&conn), before);
+}
+
+#[test]
+fn invalid_or_eof_selection_does_not_create_config_or_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("dataset");
+    let db = fixture(&root, "sample_id\tfilename\tOther Species\nA\ta.mzML\tChosen species\n", &["a.mzML"], "Other Species");
+    fs::remove_file(root.join("taxon.toml")).unwrap();
+    let config = temp.path().join("settings/peregrino.toml");
+    for selection in [Some(""), Some("\n"), Some("0\n"), Some("1,2\n"), Some("4\n"), None] {
+        let failed = ingest_with_config(&root, &db, &config, selection);
+        assert!(!failed.status.success(), "{selection:?}");
+        let error = String::from_utf8_lossy(&failed.stderr);
+        assert!(error.contains("no taxon column selected") || error.contains("invalid taxon column selection"), "{error}");
+        assert!(!config.exists());
+        assert!(!db.exists());
+    }
+}
+
+#[test]
+fn ingest_requires_a_config_argument_before_creating_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("dataset");
+    let db = fixture(
+        &root,
+        "sample_id\tfilename\tsource_taxon\nA\ta.mzML\tChosen species\n",
+        &["a.mzML"],
+        "source_taxon",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_peregrino"))
+        .arg("ingest")
+        .arg(&root)
+        .args(["--doi", "10.5281/zenodo.10018264", "--metadata", "metadata/metadata.tsv", "--ms-dir", "msdata/raw"])
+        .arg("--db")
+        .arg(&db)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--config"));
+    assert!(!db.exists());
 }

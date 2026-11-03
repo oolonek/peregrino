@@ -170,8 +170,10 @@ pub fn register(options: &RegisterOptions) -> Result<()> {
     }
     let digest = format!("{:x}", hasher.finalize());
     let mut db = SqliteConnection::establish(text(&options.database)?).context("open SQLite database")?;
-    db.batch_execute("PRAGMA foreign_keys = ON;")?;
-    db.transaction::<(), anyhow::Error, _>(|conn| {
+    // File validation and hashing run concurrently; acquire the SQLite writer
+    // reservation before reading rows to avoid competing read-to-write upgrades.
+    db.batch_execute("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 30000;")?;
+    db.immediate_transaction::<(), anyhow::Error, _>(|conn| {
         // Migrate existing ingested databases without creating a new one.
         conn.batch_execute(crate::PROCESSED_SCHEMA)?;
         let datasets = diesel::sql_query("SELECT id FROM datasets WHERE root = ?")

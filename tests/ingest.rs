@@ -27,12 +27,22 @@ fn dataset(root: &Path, contents: &str) {
     fs::create_dir_all(root.join("metadata")).unwrap();
     fs::create_dir_all(root.join("msdata/raw/nested")).unwrap();
     fs::write(root.join("metadata/metadata.tsv"), contents).unwrap();
+    fs::write(root.join("taxon.toml"), "[dataset]\ntaxon_column = \"sample_id\"\n").unwrap();
     fs::write(root.join("msdata/raw/a.mzXML"), "spectrum").unwrap();
     fs::write(root.join("msdata/raw/nested/b.mzML"), "spectrum").unwrap();
 }
 
 fn ingest(root: &Path, db: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_peregrino"))
+    ingest_with_max_rows(root, db, None)
+}
+
+fn ingest_first(root: &Path, db: &Path, max_rows: usize) -> Output {
+    ingest_with_max_rows(root, db, Some(max_rows))
+}
+
+fn ingest_with_max_rows(root: &Path, db: &Path, max_rows: Option<usize>) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_peregrino"));
+    command
         .args([
             "ingest",
             root.to_str().unwrap(),
@@ -47,8 +57,11 @@ fn ingest(root: &Path, db: &Path) -> Output {
             "--db",
         ])
         .arg(db)
-        .output()
-        .unwrap()
+        .args(["--config", root.join("taxon.toml").to_str().unwrap()]);
+    if let Some(max_rows) = max_rows {
+        command.args(["--max-rows", &max_rows.to_string()]);
+    }
+    command.output().unwrap()
 }
 
 fn stored(db: &Path) -> Vec<StoredSpectrum> {
@@ -151,4 +164,49 @@ fn reimport_replaces_rows_but_failed_validation_preserves_last_commit() {
             .collect::<Vec<_>>(),
         ["C", "C"]
     );
+}
+
+#[test]
+fn ingests_first_metadata_rows_without_importing_later_rows_or_unselected_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("isolated/records.sqlite");
+    dataset(
+        temp.path(),
+        "sample_id\tfilename\nA\ta.mzXML\nB\twrong.txt\nC\tb.mzML\n",
+    );
+    fs::write(temp.path().join("msdata/raw/unselected.mzML"), "spectrum").unwrap();
+
+    let output = ingest_first(temp.path(), &db, 1);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 sample rows and 1 spectra"));
+    let rows = stored(&db);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].sample_id, "A");
+    assert_eq!(rows[0].filename, "a.mzXML");
+    assert_eq!(rows[0].relative_path, "msdata/raw/a.mzXML");
+    let mut conn = SqliteConnection::establish(db.to_str().unwrap()).unwrap();
+    let count: Count = diesel::sql_query("SELECT COUNT(*) AS count FROM sample_rows")
+        .get_result(&mut conn)
+        .unwrap();
+    assert_eq!(count.count, 1);
+
+    let failed = ingest_first(temp.path(), &db, 2);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("invalid spectrum filename"));
+    assert_eq!(stored(&db).len(), 1);
+}
+
+#[test]
+fn first_row_with_missing_spectrum_fails_before_creating_database() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("isolated/records.sqlite");
+    dataset(temp.path(), "sample_id\tfilename\nA\tmissing.mzML\nB\tb.mzML\n");
+    let failed = ingest_first(temp.path(), &db, 1);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("missing file"));
+    assert!(!db.exists());
 }

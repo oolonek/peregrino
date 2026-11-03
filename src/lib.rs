@@ -1,5 +1,6 @@
-//! Import metadata only after machaca validates every spectrum reference.
+//! Import metadata only after machaca validates the selected spectrum references.
 
+pub mod annotations;
 pub mod inspect;
 pub mod register;
 use std::collections::HashMap;
@@ -18,9 +19,12 @@ pub struct IngestOptions {
     pub root: PathBuf,
     pub doi: String,
     pub metadata: PathBuf,
+    pub taxon_column: String,
     pub ms_dir: PathBuf,
     pub database: PathBuf,
     pub verbose: bool,
+    /// Validate and import only the first N metadata records; `None` imports all rows.
+    pub max_rows: Option<usize>,
 }
 
 /// Committed row and spectrum counts.
@@ -108,6 +112,8 @@ CREATE TABLE IF NOT EXISTS spectrum_files (
     FOREIGN KEY (dataset_id, row_number) REFERENCES sample_rows(dataset_id, row_number) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_sample_id ON sample_rows(sample_id);
+-- Foreign-key checks for replacing sample rows must find child spectra by row number.
+CREATE INDEX IF NOT EXISTS idx_spectrum_row ON spectrum_files(dataset_id, row_number);
 "#;
 
 fn inside(root: &Path, path: &Path, directory: bool) -> Result<PathBuf> {
@@ -147,11 +153,25 @@ fn reader(path: &Path) -> Result<csv::Reader<File>> {
         .from_path(path)?)
 }
 
-/// Validate through machaca, then replace this dataset's rows in one transaction.
+/// Read metadata headers using the same dataset path and delimiter rules as ingestion.
+pub fn metadata_headers(root: &Path, metadata: &Path) -> Result<csv::StringRecord> {
+    let root = root.canonicalize().context("dataset root")?;
+    if !root.is_dir() {
+        bail!("dataset root must be a directory");
+    }
+    let metadata = inside(&root, metadata, false)?;
+    let mut csv = reader(&metadata)?;
+    Ok(csv.headers()?.clone())
+}
+
+/// Validate through machaca, then replace this dataset's selected rows in one transaction.
 /// A failed validation or import leaves any previously committed dataset intact.
 pub fn ingest(options: &IngestOptions) -> Result<Counts> {
     if options.doi.trim().is_empty() {
         bail!("DOI cannot be empty");
+    }
+    if options.taxon_column.is_empty() {
+        bail!("taxon_column must not be empty");
     }
     let root = options.root.canonicalize().context("dataset root")?;
     if !root.is_dir() {
@@ -159,7 +179,11 @@ pub fn ingest(options: &IngestOptions) -> Result<Counts> {
     }
     let metadata = inside(&root, &options.metadata, false)?;
     let ms_dir = inside(&root, &options.ms_dir, true)?;
-    let checked = machaca::check(&metadata, &ms_dir).map_err(anyhow::Error::msg)?;
+    let checked = match options.max_rows {
+        Some(max_rows) => machaca::check_first(&metadata, &ms_dir, max_rows),
+        None => machaca::check(&metadata, &ms_dir),
+    }
+    .map_err(anyhow::Error::msg)?;
     let mut csv = reader(&metadata)?;
     let headers = csv.headers()?.clone();
     if headers.iter().any(str::is_empty)
@@ -172,13 +196,10 @@ pub fn ingest(options: &IngestOptions) -> Result<Counts> {
         bail!("metadata headers must be nonempty and unique");
     }
     let sample_id_index = headers.iter().position(|h| h == "sample_id");
-    let taxon_index = ["source_taxon", "taxon_name", "scientific_name", "taxon_scientific_name"]
+    let taxon_index = headers
         .iter()
-        .find_map(|name| {
-            headers
-                .iter()
-                .position(|header| header.eq_ignore_ascii_case(name))
-        });
+        .position(|header| header == options.taxon_column.as_str())
+        .with_context(|| format!("taxon column {:?} is absent from metadata headers", options.taxon_column))?;
     if let Some(parent) = options
         .database
         .parent()
@@ -226,12 +247,12 @@ pub fn ingest(options: &IngestOptions) -> Result<Counts> {
         let mut rows = 0u64;
         let mut spectra = 0u64;
         let mut taxon_ids = HashMap::<String, i64>::new();
-        for record in csv.records() {
+        for record in csv.records().take(options.max_rows.unwrap_or(usize::MAX)) {
             let record = record?;
             rows += 1;
             let row_number = i64::try_from(rows).context("too many sample rows")?;
-            let taxon_id = if let Some(name) = taxon_index
-                .and_then(|index| record.get(index))
+            let taxon_id = if let Some(name) = record
+                .get(taxon_index)
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
             {

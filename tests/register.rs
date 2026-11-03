@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 fn cli(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_peregrino"))
@@ -17,8 +17,9 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf) {
     fs::create_dir_all(&output).unwrap();
     fs::write(data.join("msdata/raw/run.mzML"), "raw").unwrap();
     fs::write(data.join("metadata/metadata.tsv"), "sample_id\tpositive_filename\tsource_taxon\nA\trun.mzML\tSalvia officinalis\n").unwrap();
+    fs::write(root.join("taxon.toml"), "[dataset]\ntaxon_column = \"source_taxon\"\n").unwrap();
     let db = root.join("flock.sqlite");
-    let result = cli(&["ingest", data.to_str().unwrap(), "--doi", "10.1234/example", "--metadata", "metadata/metadata.tsv", "--ms-dir", "msdata/raw", "--db", db.to_str().unwrap()]);
+    let result = cli(&["ingest", data.to_str().unwrap(), "--doi", "10.1234/example", "--metadata", "metadata/metadata.tsv", "--ms-dir", "msdata/raw", "--db", db.to_str().unwrap(), "--config", root.join("taxon.toml").to_str().unwrap()]);
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
     fs::write(output.join("run_features.tsv"), "feature_id\tmz\trt_seconds\tapex_intensity\tapex_to_baseline\tms1_scans\tarea\tisotope_peaks\tquality_score\tstatus\treason\tms2_scan_ids\tms2_quality\tcollision_energy\n1\t123.45\t15\t100000\t3\t3\t100\t0\t5\taccepted\t\t1\t1\t\n\t456.78\t16\t100000\t3\t3\t100\t0\t5\trejected\tno ms2\t\t\t\n").unwrap();
     fs::write(output.join("run_ms2.mgf"), "BEGIN IONS\nFEATURE_ID=1\nTITLE=run.mzML:feature_1:MS2\nPEPMASS=123.45\nCHARGE=1+\nRTINSECONDS=15\nMSLEVEL=2\nFILENAME=run.mzML\n100.1 20\nEND IONS\n").unwrap();
@@ -50,7 +51,7 @@ fn registration_migrates_existing_database_without_touching_taxon_resolutions() 
     let result = register(&data, &db, root.path(), false);
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
     assert_eq!(show(&db).lines().count(), 2);
-    let ingest = cli(&["ingest", data.to_str().unwrap(), "--doi", "10.1234/example", "--metadata", "metadata/metadata.tsv", "--ms-dir", "msdata/raw", "--db", db.to_str().unwrap()]);
+    let ingest = cli(&["ingest", data.to_str().unwrap(), "--doi", "10.1234/example", "--metadata", "metadata/metadata.tsv", "--ms-dir", "msdata/raw", "--db", db.to_str().unwrap(), "--config", root.path().join("taxon.toml").to_str().unwrap()]);
     assert!(ingest.status.success(), "{}", String::from_utf8_lossy(&ingest.stderr));
     let resolutions = cli(&["show", "taxon_resolutions", "--db", db.to_str().unwrap()]);
     assert!(resolutions.status.success());
@@ -69,7 +70,7 @@ fn registers_picoto_files_to_existing_raw_and_preserves_same_identity_on_reinges
     assert!(before.contains("run_sirius.mgf"), "{before}");
     assert!(before.contains("run_features.tsv"), "{before}");
     assert!(before.contains("e64e1165d6ccaefaf591af5b843ac0b83c444814be1da2f9d56387c34513b78b"), "{before}");
-    let result = cli(&["ingest", data.to_str().unwrap(), "--doi", "10.1234/example", "--metadata", "metadata/metadata.tsv", "--ms-dir", "msdata/raw", "--db", db.to_str().unwrap()]);
+    let result = cli(&["ingest", data.to_str().unwrap(), "--doi", "10.1234/example", "--metadata", "metadata/metadata.tsv", "--ms-dir", "msdata/raw", "--db", db.to_str().unwrap(), "--config", root.path().join("taxon.toml").to_str().unwrap()]);
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
     assert_eq!(show(&db), before);
 }
@@ -82,7 +83,7 @@ fn reingest_prunes_links_when_raw_removed_or_replaced_in_place() {
     let raw = data.join("msdata/raw/run.mzML");
     fs::remove_file(&raw).unwrap();
     fs::write(&raw, "different raw").unwrap();
-    let ingest = || cli(&["ingest", data.to_str().unwrap(), "--doi", "10.1234/example", "--metadata", "metadata/metadata.tsv", "--ms-dir", "msdata/raw", "--db", db.to_str().unwrap()]);
+    let ingest = || cli(&["ingest", data.to_str().unwrap(), "--doi", "10.1234/example", "--metadata", "metadata/metadata.tsv", "--ms-dir", "msdata/raw", "--db", db.to_str().unwrap(), "--config", root.path().join("taxon.toml").to_str().unwrap()]);
     assert!(ingest().status.success());
     assert_eq!(show(&db).lines().count(), 1);
     assert!(register(&data, &db, root.path(), false).status.success());
@@ -115,4 +116,83 @@ fn registration_rejects_missing_database_mismatched_or_nonpicoto_outputs_without
     fs::copy(mgf, outside).unwrap();
     let result = cli(&["register", "--db", db.to_str().unwrap(), "--dataset", data.to_str().unwrap(), "--raw", "run.mzML", "--ms2", root.path().join("other_ms2.mgf").to_str().unwrap(), "--features", root.path().join("picoto/run_features.tsv").to_str().unwrap()]);
     assert!(!result.status.success());
+}
+
+#[test]
+fn concurrent_registrations_commit_without_database_locks() {
+    const COUNT: usize = 16;
+    let root = tempfile::tempdir().unwrap();
+    let (data, db) = fixture(root.path());
+    let output = root.path().join("picoto");
+    let mut metadata = String::from("sample_id\tpositive_filename\tsource_taxon\nA\trun.mzML\tSalvia officinalis\n");
+    for id in 1..COUNT {
+        let name = format!("run{id}.mzML");
+        fs::write(data.join("msdata/raw").join(&name), "another raw").unwrap();
+        metadata.push_str(&format!("{id}\t{name}\tSalvia officinalis\n"));
+        fs::copy(
+            output.join("run_features.tsv"),
+            output.join(format!("run{id}_features.tsv")),
+        )
+        .unwrap();
+        for suffix in ["ms2.mgf", "sirius.mgf"] {
+            let original = fs::read_to_string(output.join(format!("run_{suffix}"))).unwrap();
+            fs::write(
+                output.join(format!("run{id}_{suffix}")),
+                original.replace("run.mzML", &name),
+            )
+            .unwrap();
+        }
+    }
+    fs::write(data.join("metadata/metadata.tsv"), metadata).unwrap();
+    let ingest = cli(&[
+        "ingest",
+        data.to_str().unwrap(),
+        "--doi",
+        "10.1234/example",
+        "--metadata",
+        "metadata/metadata.tsv",
+        "--ms-dir",
+        "msdata/raw",
+        "--db",
+        db.to_str().unwrap(),
+        "--config",
+        root.path().join("taxon.toml").to_str().unwrap(),
+    ]);
+    assert!(ingest.status.success(), "{}", String::from_utf8_lossy(&ingest.stderr));
+
+    let mut children = Vec::new();
+    for id in 0..COUNT {
+        let stem = if id == 0 { "run".to_owned() } else { format!("run{id}") };
+        let name = format!("{stem}.mzML");
+        let child = Command::new(env!("CARGO_BIN_EXE_peregrino"))
+            .args(["register", "--db"])
+            .arg(&db)
+            .arg("--dataset")
+            .arg(&data)
+            .args(["--raw", &name, "--ms2"])
+            .arg(output.join(format!("{stem}_ms2.mgf")))
+            .arg("--features")
+            .arg(output.join(format!("{stem}_features.tsv")))
+            .arg("--paired")
+            .arg(output.join(format!("{stem}_sirius.mgf")))
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        children.push((name, child));
+    }
+    for (name, child) in children {
+        let result = child.wait_with_output().unwrap();
+        assert!(
+            result.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let db = rusqlite::Connection::open(db).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM processed_spectra", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        COUNT as i64
+    );
 }

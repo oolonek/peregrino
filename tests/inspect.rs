@@ -22,12 +22,15 @@ fn populated(root: &Path) -> std::path::PathBuf {
     .unwrap();
     fs::write(root.join("msdata/raw/a.mzXML"), "spectrum").unwrap();
     fs::write(root.join("msdata/raw/b.mzML"), "spectrum").unwrap();
+    fs::write(root.join("taxon.toml"), "[dataset]\ntaxon_column = \"sample_id\"\n").unwrap();
     let db = root.join("flock.sqlite");
     let result = command(&[
         "ingest",
         root.to_str().unwrap(),
         "--doi",
         "10.5281/zenodo.10018264",
+        "--config",
+        root.join("taxon.toml").to_str().unwrap(),
         "--metadata",
         "metadata/metadata.tsv",
         "--ms-dir",

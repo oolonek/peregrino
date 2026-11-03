@@ -5,9 +5,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags, ToSql};
 
-fn open(database: &Path) -> Result<Connection> {
+pub(crate) fn open(database: &Path) -> Result<Connection> {
     Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("open SQLite database {} read-only", database.display()))
 }
@@ -48,14 +48,25 @@ pub fn write_table(
         bail!("table {table:?} not found");
     }
     let escaped = table.replace('"', "\"\"");
-    let mut statement = db.prepare(&format!("SELECT * FROM \"{escaped}\" LIMIT ?1"))?;
+    let sql = format!("SELECT * FROM \"{escaped}\" LIMIT ?1");
+    let limit = limit.map(i64::try_from).transpose()?.unwrap_or(-1);
+    write_query(&db, &sql, &[&limit], output)
+}
+
+/// Stream a read-only report with the same TSV encoding as `show` and `export`.
+pub(crate) fn write_query(
+    db: &Connection,
+    sql: &str,
+    values: &[&dyn ToSql],
+    output: impl Write,
+) -> Result<()> {
+    let mut statement = db.prepare(sql)?;
     let mut writer = csv::WriterBuilder::new()
         .delimiter(b'\t')
         .from_writer(output);
     writer.write_record(statement.column_names())?;
     let column_count = statement.column_count();
-    let limit = limit.map(i64::try_from).transpose()?.unwrap_or(-1);
-    let mut rows = statement.query(params![limit])?;
+    let mut rows = statement.query(values)?;
     while let Some(row) = rows.next()? {
         for index in 0..column_count {
             match row.get_ref(index)? {
