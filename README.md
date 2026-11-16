@@ -2,7 +2,7 @@
 
 Peregrino keeps a searchable record of a dataset's sample metadata and raw mass-spectrometry file references. It also records which processed spectra Picoto produced, so later annotation results and a local knowledge graph can be traced back to their source files. It does not download datasets or read raw spectra.
 
-The flock helps turn mass-spectrometry samples and measurements into traceable evidence for possible chemical matches, with an optional local knowledge-graph export. [Start with the flock overview](https://github.com/oolonek/flock-roadmap/blob/main/README.md) to see how the crates work together before following a technical guide.
+The flock helps turn mass-spectrometry samples and measurements into traceable evidence for possible chemical matches, with an optional local knowledge-graph export. [Start with the flock overview](https://github.com/oolonek/isla-gabriola-flock/blob/main/README.md) to see how the crates work together before following a technical guide.
 
 The name refers to the basking shark (*[Cetorhinus maximus](https://www.catalogueoflife.org/data/taxon/T72Q)*; [Wikidata](https://www.wikidata.org/wiki/Q185260)), a plankton-filtering shark.
 
