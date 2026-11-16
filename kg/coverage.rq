@@ -1,0 +1,16 @@
+PREFIX kg: <urn:mato:term:>
+
+# Historical runs and hits are counted separately from extracted features.
+SELECT ?sampleRecords ?acquisitions ?rawFiles ?features ?querySpectra
+       ?annotationRuns ?annotatedQueries ?candidateHits ?linkedChemicalHits
+WHERE {
+  { SELECT (COUNT(?s) AS ?sampleRecords) WHERE { ?s a kg:SampleRecord . } }
+  { SELECT (COUNT(?a) AS ?acquisitions) WHERE { ?a a kg:Acquisition . } }
+  { SELECT (COUNT(?r) AS ?rawFiles) WHERE { ?r a kg:RawFile . } }
+  { SELECT (COUNT(?f) AS ?features) WHERE { ?f a kg:Feature . } }
+  { SELECT (COUNT(?q) AS ?querySpectra) WHERE { ?q a kg:QuerySpectrum . } }
+  { SELECT (COUNT(?run) AS ?annotationRuns) WHERE { ?run a kg:AnnotationRun . } }
+  { SELECT (COUNT(?af) AS ?annotatedQueries) WHERE { ?af a kg:AnnotationFeature . } }
+  { SELECT (COUNT(?h) AS ?candidateHits) WHERE { ?h a kg:CandidateHit . } }
+  { SELECT (COUNT(?h) AS ?linkedChemicalHits) WHERE { ?h kg:candidateChemical ?qid . } }
+}

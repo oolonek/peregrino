@@ -6,6 +6,8 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use peregrino::annotations::{AnnotationCommand, run as run_annotations};
 use peregrino::inspect::{list_tables, write_table};
+use peregrino::kg;
+use peregrino::kg_validation;
 use peregrino::register::{RegisterOptions, register};
 use peregrino::{IngestOptions, ingest, metadata_headers};
 
@@ -79,6 +81,36 @@ enum Command {
         db: PathBuf,
         #[command(subcommand)]
         command: AnnotationCommand,
+    },
+    /// Export or query the local Wikidata-linked metabolomics graph.
+    Kg {
+        #[command(subcommand)]
+        command: KgCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum KgCommand {
+    /// Export one dataset as deterministic N-Quads without modifying SQLite.
+    Export {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        dataset_id: i64,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Validate an N-Quads export against the bundled SHACL shapes in Rust.
+    Validate {
+        #[arg(long)]
+        graph: PathBuf,
+    },
+    /// Run a SPARQL SELECT over an exported N-Quads graph and print TSV.
+    Query {
+        #[arg(long)]
+        graph: PathBuf,
+        #[arg(long)]
+        query: PathBuf,
     },
 }
 
@@ -200,6 +232,11 @@ fn main() -> anyhow::Result<()> {
             tmp.persist_noclobber(&out)?;
             println!("Exported {table} to {}", out.display());
         }
+        Command::Kg { command } => match command {
+            KgCommand::Export { db, dataset_id, out } => kg::export(&db, dataset_id, &out)?,
+            KgCommand::Validate { graph } => kg_validation::validate(&graph)?,
+            KgCommand::Query { graph, query } => kg::query(&graph, &query, std::io::stdout().lock())?,
+        },
     }
     Ok(())
 }

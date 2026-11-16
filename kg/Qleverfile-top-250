@@ -1,0 +1,26 @@
+# Run from the directory containing the already-exported top-250 graph.nq.
+# The index name and server port differ from Qleverfile (toy); see QLEVER.md.
+[data]
+NAME = mato-top-250
+FORMAT = nq
+DESCRIPTION = Mato MassIVE top-250 metabolomics evidence graph (local RDF, Wikidata-linked)
+
+[index]
+INPUT_FILES = graph.nq
+CAT_INPUT_FILES = cat ${INPUT_FILES}
+SETTINGS_JSON = { "ascii-prefixes-only": false, "num-triples-per-batch": 100000 }
+TEXT_INDEX = none
+PARALLEL_PARSING = false
+
+[server]
+PORT = 7045
+MEMORY_FOR_QUERIES = 2G
+CACHE_MAX_SIZE = 512M
+CACHE_MAX_SIZE_SINGLE_ENTRY = 128M
+NUM_THREADS = 4
+TIMEOUT = 30s
+
+[runtime]
+SYSTEM = docker
+# Use the same pinned engine to index and serve this graph.
+IMAGE = docker.io/adfreiburg/qlever@sha256:27d51763ca24bfe49a4f9e4108babae376f2dffef1313086b95bd262f06e6492

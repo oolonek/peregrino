@@ -1,0 +1,76 @@
+@prefix kg: <urn:mato:term:> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix wdt: <http://www.wikidata.org/prop/direct/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# Validate the local evidence graph, not the completeness of Wikidata items.
+kg:DatasetShape a sh:NodeShape ;
+    sh:targetClass kg:Dataset ;
+    sh:property [ sh:path wdt:P356 ; sh:datatype xsd:string ; sh:minCount 1 ; sh:maxCount 1 ] .
+
+kg:AcquisitionShape a sh:NodeShape ;
+    sh:targetClass kg:Acquisition ;
+    sh:property [ sh:path prov:used ; sh:class kg:SampleRecord ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:rawFile ; sh:class kg:RawFile ; sh:minCount 1 ; sh:maxCount 1 ] .
+
+kg:RawFileShape a sh:NodeShape ;
+    sh:targetClass kg:RawFile ;
+    sh:property [ sh:path kg:sha256 ; sh:datatype xsd:string ;
+                  sh:pattern "^[0-9a-f]{64}$" ; sh:minCount 1 ; sh:maxCount 1 ] .
+
+kg:ProcessingShape a sh:NodeShape ;
+    sh:targetClass kg:Processing ;
+    sh:property [ sh:path prov:used ; sh:class kg:RawFile ; sh:minCount 1 ; sh:maxCount 1 ] .
+
+kg:FeatureShape a sh:NodeShape ;
+    sh:targetClass kg:Feature ;
+    sh:property [ sh:path kg:precursorMz ; sh:datatype xsd:double ;
+                  sh:minExclusive 0 ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:retentionTimeSeconds ; sh:datatype xsd:double ;
+                  sh:minInclusive 0 ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:querySpectrum ; sh:class kg:QuerySpectrum ;
+                  sh:minCount 1 ; sh:maxCount 1 ] .
+
+kg:AnnotationRunShape a sh:NodeShape ;
+    sh:targetClass kg:AnnotationRun ;
+    sh:property [ sh:path kg:status ; sh:datatype xsd:string ;
+                  sh:in ( "hits" "no_hits" "error" ) ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:matcherVersion ; sh:datatype xsd:string ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:createdAt ; sh:datatype xsd:dateTime ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:scoringTaxon ; sh:nodeKind sh:IRI ;
+                  sh:pattern "^http://www\\.wikidata\\.org/entity/Q[1-9][0-9]*$" ;
+                  sh:maxCount 1 ] .
+
+kg:CandidateHitShape a sh:NodeShape ;
+    sh:targetClass kg:CandidateHit ;
+    sh:property [ sh:path kg:referenceSpectrum ; sh:class kg:ReferenceSpectrum ;
+                  sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path prov:wasGeneratedBy ; sh:class kg:AnnotationRun ;
+                  sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:rank ; sh:datatype xsd:integer ;
+                  sh:minInclusive 1 ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:spectralScore ; sh:datatype xsd:double ;
+                  sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:combinedScore ; sh:datatype xsd:double ;
+                  sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:matchedPeakCount ; sh:datatype xsd:integer ;
+                  sh:minInclusive 0 ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:taxonomicSupport ; sh:datatype xsd:string ;
+                  sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:matchedOrganism ; sh:nodeKind sh:IRI ;
+                  sh:pattern "^http://www\\.wikidata\\.org/entity/Q[1-9][0-9]*$" ;
+                  sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:candidateChemical ; sh:nodeKind sh:IRI ;
+                  sh:pattern "^http://www\\.wikidata\\.org/entity/Q[1-9][0-9]*$" ;
+                  sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:matchedLotusInchikey ; sh:datatype xsd:string ;
+                  sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:matchedLotusStructure ; sh:nodeKind sh:IRI ;
+                  sh:pattern "^http://www\\.wikidata\\.org/entity/Q[1-9][0-9]*$" ;
+                  sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:matchedLotusReference ; sh:nodeKind sh:IRI ;
+                  sh:pattern "^http://www\\.wikidata\\.org/entity/Q[1-9][0-9]*$" ;
+                  sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:matchedLotusReferenceDoi ; sh:datatype xsd:string ;
+                  sh:maxCount 1 ] .

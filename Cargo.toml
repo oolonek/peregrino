@@ -11,8 +11,12 @@ diesel = { version = "2", features = ["sqlite"] }
 indicatif = "0.18"
 machaca = { path = "../machaca" }
 rusqlite = "0.37"
+oxigraph = { version = "=0.5.13", default-features = false }
 tempfile = "3"
 serde_json = "1"
 sha2 = "0.10"
+shacl = "=0.3.39"
+rudof_rdf = { version = "=0.3.39", default-features = false }
+sparql_service = { version = "=0.3.39", default-features = false }
 toml = "0.8"
 

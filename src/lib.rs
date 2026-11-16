@@ -1,7 +1,10 @@
 //! Import metadata only after machaca validates the selected spectrum references.
 
+mod artifact;
 pub mod annotations;
 pub mod inspect;
+pub mod kg;
+pub mod kg_validation;
 pub mod register;
 use std::collections::HashMap;
 use std::fs::File;

@@ -1,0 +1,130 @@
+# Optional dedicated QLever UI backend for a toy graph indexed on port 7043.
+# The base URL is resolved by BOTH the server and the browser; an SSH client
+# must also forward laptop port 7043 to the server when forwarding the UI.
+config:
+  backend:
+    slug: default
+    name: Mato toy metabolomics KG
+    sortKey: '1'
+    isDefault: 'True'
+    baseUrl: http://127.0.0.1:7043
+    suggestedPrefixes: |
+      @prefix kg: <urn:mato:term:> .
+      @prefix prov: <http://www.w3.org/ns/prov#> .
+      @prefix wd: <http://www.wikidata.org/entity/> .
+      @prefix wdt: <http://www.wikidata.org/prop/direct/> .
+  examples:
+    - name: Sample metadata records
+      sort_key: 1
+      query: |
+        PREFIX kg: <urn:mato:term:>
+        SELECT (COUNT(?sample) AS ?samples) WHERE { ?sample a kg:SampleRecord . }
+    - name: Ranked Wikidata-linked candidate evidence (not compound presence)
+      sort_key: 2
+      query: |
+        PREFIX kg: <urn:mato:term:>
+        PREFIX prov: <http://www.w3.org/ns/prov#>
+        PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+        SELECT ?doi ?sample ?taxon ?mz ?rtSeconds ?chemical ?score WHERE {
+          ?dataset wdt:P356 ?doi ; kg:hasSampleRecord ?record .
+          ?record kg:sampleIdentifier ?sample ; kg:reportedSourceTaxon ?taxon ;
+                  kg:hasAcquisition ?acquisition .
+          ?acquisition kg:rawFile ?raw .
+          ?processing prov:used ?raw ; kg:hasFeature ?feature .
+          ?feature kg:precursorMz ?mz ; kg:retentionTimeSeconds ?rtSeconds .
+          ?hit kg:feature ?feature ; kg:candidateChemical ?chemical ;
+               kg:spectralScore ?score .
+          FILTER(?score >= 0.7)
+        } ORDER BY DESC(?score) LIMIT 20
+    - name: All candidate annotations with taxonomic score > X and spectral score > Y
+      sort_key: 3
+      query: |
+        PREFIX kg: <urn:mato:term:>
+        PREFIX prov: <http://www.w3.org/ns/prov#>
+        # Set X and Y here; both comparisons are strictly greater than.
+        # QID columns link to Wikidata when resolved; blank means unresolved.
+        # These are ranked candidate hits, not confirmed metabolite presence.
+        SELECT ?run ?rawFilename ?featureId ?sourceTaxonQid ?scoringTaxonQid
+               ?matchedOrganismQid ?chemicalQid ?inchikey
+               ?matchedLotusStructureQid ?matchedLotusInchikey
+               ?matchedLotusReferenceQid ?matchedLotusReferenceDoi ?reference
+               ?taxonomicScore ?spectralScore ?combinedScore ?rank ?support
+               ?mz ?rtSeconds WHERE {
+          VALUES (?X ?Y) { (5.0 0.7) }
+          ?run a kg:AnnotationRun ; kg:rawFilename ?rawFilename ;
+               kg:hasCandidateHit ?hit .
+          ?hit kg:featureIdentifier ?featureId ; kg:referenceSpectrum ?reference ;
+               kg:taxonomicScore ?taxonomicScore ;
+               kg:spectralScore ?spectralScore ;
+               kg:combinedScore ?combinedScore ; kg:rank ?rank ;
+               kg:taxonomicSupport ?support .
+          OPTIONAL { ?run kg:scoringTaxon ?scoringTaxonQid . }
+          OPTIONAL { ?hit kg:inchikey ?inchikey . }
+          OPTIONAL { ?hit kg:matchedOrganism ?matchedOrganismQid . }
+          OPTIONAL { ?hit kg:candidateChemical ?chemicalQid . }
+          # The supporting LOTUS structure can differ from the candidate QID.
+          OPTIONAL { ?hit kg:matchedLotusStructure ?matchedLotusStructureQid . }
+          OPTIONAL { ?hit kg:matchedLotusInchikey ?matchedLotusInchikey . }
+          OPTIONAL { ?hit kg:matchedLotusReference ?matchedLotusReferenceQid . }
+          OPTIONAL { ?hit kg:matchedLotusReferenceDoi ?matchedLotusReferenceDoi . }
+          # A historical run may lack a current Picoto feature; retain its hit.
+          OPTIONAL {
+            ?hit kg:feature ?feature .
+            ?feature kg:precursorMz ?mz ; kg:retentionTimeSeconds ?rtSeconds .
+          }
+          # Source taxon belongs to the sampled organism, not the library match.
+          OPTIONAL {
+            ?run kg:derivedFrom ?processing .
+            ?processing prov:used ?raw .
+            ?acquisition kg:rawFile ?raw .
+            ?sample kg:hasAcquisition ?acquisition ;
+                    kg:reportedSourceTaxon ?sourceTaxonQid .
+          }
+          FILTER(?taxonomicScore > ?X && ?spectralScore > ?Y)
+        } ORDER BY DESC(?combinedScore) ?run ?featureId ?rank
+    - name: Longest evidence path with actual Wikidata PID and QIDs
+      sort_key: 4
+      query: |
+        PREFIX kg: <urn:mato:term:>
+        PREFIX prov: <http://www.w3.org/ns/prov#>
+        PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+        # P356 is a real Wikidata DOI predicate on our local Dataset.
+        # The QIDs are resolved items; P225/P235 claims are NOT in this graph.
+        SELECT ?doiProperty ?doi ?sampleId ?sourceTaxon ?rawSha ?auditSha
+               ?mgfSha ?featureId ?mz ?rtSeconds ?querySpectrum ?run
+               ?matcherVersion ?scoringTaxon ?hit ?referenceId
+               ?matchedOrganism ?chemical ?matchedLotusStructure
+               ?matchedLotusInchikey ?matchedLotusReference ?matchedLotusReferenceDoi
+               ?spectralScore ?taxonomicScore WHERE {
+          VALUES ?doiProperty { wdt:P356 }
+          ?dataset ?doiProperty ?doi ; kg:hasSampleRecord ?sample .
+          ?sample kg:sampleIdentifier ?sampleId ;
+                  kg:reportedSourceTaxon ?sourceTaxon ;
+                  kg:hasAcquisition ?acquisition .
+          ?acquisition prov:used ?sample ; kg:rawFile ?raw .
+          ?raw kg:sha256 ?rawSha .
+          ?processing prov:used ?raw ; kg:featureAudit ?audit ;
+                      kg:processedSpectrumFile ?mgf ; kg:hasFeature ?feature .
+          ?audit kg:sha256 ?auditSha .
+          ?mgf kg:sha256 ?mgfSha .
+          ?feature kg:featureIdentifier ?featureId ; kg:precursorMz ?mz ;
+                   kg:retentionTimeSeconds ?rtSeconds ;
+                   kg:querySpectrum ?querySpectrum .
+          ?querySpectrum kg:derivedFrom ?mgf ;
+                         prov:wasGeneratedBy ?processing .
+          ?run kg:derivedFrom ?processing ;
+               kg:querySpectrum ?querySpectrum ;
+               kg:matcherVersion ?matcherVersion ;
+               kg:scoringTaxon ?scoringTaxon ;
+               kg:hasCandidateHit ?hit .
+          ?hit kg:feature ?feature ; kg:referenceSpectrum ?reference ;
+               kg:matchedOrganism ?matchedOrganism ;
+               kg:candidateChemical ?chemical ;
+               kg:spectralScore ?spectralScore ;
+               kg:taxonomicScore ?taxonomicScore .
+          OPTIONAL { ?hit kg:matchedLotusStructure ?matchedLotusStructure . }
+          OPTIONAL { ?hit kg:matchedLotusInchikey ?matchedLotusInchikey . }
+          OPTIONAL { ?hit kg:matchedLotusReference ?matchedLotusReference . }
+          OPTIONAL { ?hit kg:matchedLotusReferenceDoi ?matchedLotusReferenceDoi . }
+          ?reference kg:librarySpectrumIdentifier ?referenceId .
+        } ORDER BY DESC(?spectralScore) ?feature ?hit LIMIT 25

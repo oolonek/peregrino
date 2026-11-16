@@ -1,0 +1,25 @@
+PREFIX kg: <urn:mato:term:>
+PREFIX prov: <http://www.w3.org/ns/prov#>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+
+# Which samples of a resolved source taxon led to *Wikidata-linked* candidates?
+# Each row is a scored library match in one annotation run, not chemical presence.
+SELECT ?doi ?sampleId ?taxon ?rawSha ?processing ?feature ?mz ?rtSeconds
+       ?run ?hit ?referenceSpectrum ?chemical ?spectralScore ?rank
+WHERE {
+  ?dataset wdt:P356 ?doi ; kg:hasSampleRecord ?sample .
+  ?sample kg:reportedSourceTaxon ?taxon ; kg:hasAcquisition ?acquisition .
+  OPTIONAL { ?sample kg:sampleIdentifier ?sampleId . }
+  ?acquisition kg:rawFile ?raw .
+  ?raw kg:sha256 ?rawSha .
+  ?processing prov:used ?raw ; kg:hasFeature ?feature .
+  ?feature kg:precursorMz ?mz ; kg:retentionTimeSeconds ?rtSeconds ;
+           kg:querySpectrum ?querySpectrum .
+  ?run kg:hasCandidateHit ?hit .
+  ?hit kg:feature ?feature ; kg:referenceSpectrum ?referenceSpectrum ;
+       kg:candidateChemical ?chemical ;
+       kg:spectralScore ?spectralScore ; kg:rank ?rank .
+  FILTER(?spectralScore >= 0.7)
+}
+ORDER BY DESC(?spectralScore) ?feature ?rank
+LIMIT 25

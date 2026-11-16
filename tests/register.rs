@@ -119,6 +119,20 @@ fn registration_rejects_missing_database_mismatched_or_nonpicoto_outputs_without
 }
 
 #[test]
+fn registration_rejects_audit_coordinate_disagreement_without_replacing_existing_link() {
+    let root = tempfile::tempdir().unwrap();
+    let (data, db) = fixture(root.path());
+    assert!(register(&data, &db, root.path(), true).status.success());
+    let before = show(&db);
+    let audit = root.path().join("picoto/run_features.tsv");
+    let original = fs::read_to_string(&audit).unwrap();
+    fs::write(&audit, original.replace("123.45\t15\t", "123.45\t25\t")).unwrap();
+    let result = register(&data, &db, root.path(), true);
+    assert!(!result.status.success(), "a changed accepted retention time must be rejected");
+    assert_eq!(show(&db), before, "failed validation must not update registration");
+}
+
+#[test]
 fn concurrent_registrations_commit_without_database_locks() {
     const COUNT: usize = 16;
     let root = tempfile::tempdir().unwrap();

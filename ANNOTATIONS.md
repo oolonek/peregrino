@@ -6,12 +6,12 @@ Open the existing Peregrino database with the SQLite CLI (no database writes):
 sqlite3 -readonly -header -column /path/to/flock.sqlite
 ```
 
-Paste each SQL statement below at the `sqlite>` prompt. For the queries scoped to one dataset/file, set CLI parameters first (replace the example values with a `spectrum_files.dataset_id` and `spectrum_files.filename` from your database):
+Paste each SQL statement below at the `sqlite>` prompt. For the queries scoped to one dataset/file, first look up `spectrum_files.dataset_id` and `spectrum_files.filename` in **your** database, then set CLI parameters to those values (the numbers and filename below are illustrative, not universal):
 
 ```text
 .parameter init
 .parameter set :dataset_id 1
-.parameter set :filename 'example.mgf'
+.parameter set :filename 'run.mzML'
 ```
 
 For large databases, start with a single dataset/file. `LIMIT` bounds returned rows, **not** work done to sort, group, or rank millions of hits. Queries across all files, including the top-ten and duplicate-structure recipes, can require substantial scans. These recipes read the database; the CLI parameters are temporary session bindings, not changes to the flock database.
@@ -20,14 +20,17 @@ For large databases, start with a single dataset/file. `LIMIT` bounds returned r
 
 `annotations` emits TSV. `files` shows all ingested filenames and their total retained hits; `counts` counts *retained hit rows* meeting your score/taxonomy filters per current successful file (including zero-match files), with a distinct count of features having matching hits. `counts` requires `--dataset-id` or exact `--file` because it scans scored rows; a `--limit` only limits returned files, not the scan. `features` includes zero-hit query spectra; `hits` shows individual reranked candidates for an exact file; `errors` shows current failures.
 
+Run from the flock directory (the parent of `peregrino/`). Replace `run.mzML` with a filename in the selected dataset; look up the ID with `cargo run --manifest-path peregrino/Cargo.toml -- show datasets --db /path/to/ingested/flock.sqlite` before entering it below.
+
 ```sh
-DB=/media/nvme8tb/isla-gabriela/peregrino/flock.sqlite
-cargo run --manifest-path peregrino/Cargo.toml -- annotations --db "$DB" summary --dataset-id 2
-cargo run --manifest-path peregrino/Cargo.toml -- annotations --db "$DB" files --dataset-id 2 --status hits --limit 20
-cargo run --manifest-path peregrino/Cargo.toml -- annotations --db "$DB" counts --dataset-id 2 --min-spectral-score 0.7 --min-taxonomic-score 9 --shared-rank species --limit 20
-cargo run --manifest-path peregrino/Cargo.toml -- annotations --db "$DB" features --dataset-id 2 --file run.mzML --limit 20
-cargo run --manifest-path peregrino/Cargo.toml -- annotations --db "$DB" hits --dataset-id 2 --file run.mzML --support supported --min-matches 6 --limit 20
-cargo run --manifest-path peregrino/Cargo.toml -- annotations --db "$DB" errors --dataset-id 2 --limit 20
+DB=/path/to/ingested/flock.sqlite
+printf 'Dataset ID from this database: '; read -r DATASET_ID
+cargo run --manifest-path peregrino/Cargo.toml -- annotations --db "$DB" summary --dataset-id "$DATASET_ID"
+cargo run --manifest-path peregrino/Cargo.toml -- annotations --db "$DB" files --dataset-id "$DATASET_ID" --status hits --limit 20
+cargo run --manifest-path peregrino/Cargo.toml -- annotations --db "$DB" counts --dataset-id "$DATASET_ID" --min-spectral-score 0.7 --min-taxonomic-score 9 --shared-rank species --limit 20
+cargo run --manifest-path peregrino/Cargo.toml -- annotations --db "$DB" features --dataset-id "$DATASET_ID" --file run.mzML --limit 20
+cargo run --manifest-path peregrino/Cargo.toml -- annotations --db "$DB" hits --dataset-id "$DATASET_ID" --file run.mzML --support supported --min-matches 6 --limit 20
+cargo run --manifest-path peregrino/Cargo.toml -- annotations --db "$DB" errors --dataset-id "$DATASET_ID" --limit 20
 ```
 
 `--file` matches the raw filename exactly, not a path or a pattern; provide `--dataset-id` when the same name can occur in several datasets. `--support supported` means a positive taxonomic bonus at **any** rank; `--shared-rank species` specifically requires species-level support. `hit_count`/`matching_hits` count retained scored candidate rows, not distinct molecules.

@@ -1,0 +1,42 @@
+PREFIX kg: <urn:mato:term:>
+PREFIX prov: <http://www.w3.org/ns/prov#>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+
+# A scored library candidate in a specific historical annotation attempt.
+# Source taxon, scoring taxon, matched LOTUS organism, supporting LOTUS
+# structure/reference, and candidate chemical are different roles.
+# Short-key support does NOT assert occurrence of the candidate QID.
+SELECT ?doi ?sampleId ?sourceTaxon ?rawSha ?mgfSha ?featureId ?mz ?rtSeconds
+       ?run ?matcherVersion ?scoringTaxon ?hit ?referenceSpectrum
+       ?matchedOrganism ?sharedRank ?support ?matchedPeaks
+       ?chemical ?candidateInchikey ?matchedLotusStructure ?matchedLotusInchikey
+       ?matchedLotusReference ?matchedLotusReferenceDoi
+       ?spectralScore ?taxonomicScore ?combinedScore ?rank
+WHERE {
+  ?dataset wdt:P356 ?doi ; kg:hasSampleRecord ?sample .
+  ?sample kg:hasAcquisition ?acquisition .
+  ?acquisition kg:rawFile ?raw .
+  ?raw kg:sha256 ?rawSha .
+  ?processing prov:used ?raw ; kg:hasFeature ?feature .
+  ?feature kg:featureIdentifier ?featureId ; kg:precursorMz ?mz ;
+           kg:retentionTimeSeconds ?rtSeconds .
+  ?run kg:derivedFrom ?processing ; kg:ms2Sha256 ?mgfSha ;
+       kg:matcherVersion ?matcherVersion ; kg:hasCandidateHit ?hit .
+  ?hit kg:feature ?feature ; kg:referenceSpectrum ?referenceSpectrum ;
+       kg:candidateChemical ?chemical ; kg:taxonomicSupport ?support ;
+       kg:matchedPeakCount ?matchedPeaks ; kg:spectralScore ?spectralScore ;
+       kg:taxonomicScore ?taxonomicScore ; kg:combinedScore ?combinedScore ;
+       kg:rank ?rank .
+  OPTIONAL { ?sample kg:sampleIdentifier ?sampleId . }
+  OPTIONAL { ?sample kg:reportedSourceTaxon ?sourceTaxon . }
+  OPTIONAL { ?run kg:scoringTaxon ?scoringTaxon . }
+  OPTIONAL { ?hit kg:matchedOrganism ?matchedOrganism . }
+  OPTIONAL { ?hit kg:matchedSharedRank ?sharedRank . }
+  OPTIONAL { ?hit kg:inchikey ?candidateInchikey . }
+  OPTIONAL { ?hit kg:matchedLotusStructure ?matchedLotusStructure . }
+  OPTIONAL { ?hit kg:matchedLotusInchikey ?matchedLotusInchikey . }
+  OPTIONAL { ?hit kg:matchedLotusReference ?matchedLotusReference . }
+  OPTIONAL { ?hit kg:matchedLotusReferenceDoi ?matchedLotusReferenceDoi . }
+}
+ORDER BY DESC(?combinedScore) ?feature ?rank
+LIMIT 25

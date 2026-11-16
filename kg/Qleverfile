@@ -1,0 +1,27 @@
+# Run `qlever -q /absolute/path/to/this/Qleverfile index` from a separate
+# working directory containing graph.nq; do not build the index in the repo.
+# See QLEVER.md for localhost-only server startup and a safe refresh procedure.
+[data]
+NAME = mato-toy
+FORMAT = nq
+DESCRIPTION = Mato toy metabolomics evidence graph (local RDF, Wikidata-linked)
+
+[index]
+INPUT_FILES = graph.nq
+CAT_INPUT_FILES = cat ${INPUT_FILES}
+SETTINGS_JSON = { "ascii-prefixes-only": false, "num-triples-per-batch": 100000 }
+TEXT_INDEX = none
+PARALLEL_PARSING = false
+
+[server]
+PORT = 7043
+MEMORY_FOR_QUERIES = 2G
+CACHE_MAX_SIZE = 512M
+CACHE_MAX_SIZE_SINGLE_ENTRY = 128M
+NUM_THREADS = 4
+TIMEOUT = 30s
+
+[runtime]
+SYSTEM = docker
+# Fixed image digest: avoid a silent engine upgrade during a refresh.
+IMAGE = docker.io/adfreiburg/qlever@sha256:27d51763ca24bfe49a4f9e4108babae376f2dffef1313086b95bd262f06e6492
