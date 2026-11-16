@@ -21,6 +21,8 @@ After the overview, use [Mato's job instructions](https://github.com/oolonek/mat
 
 The [technical guide](TECHNICAL.md) covers ingest, registration, inspection, annotation queries, KG export, validation and graph semantics. See [annotation query recipes](ANNOTATIONS.md) and the [QLever deployment guide](kg/QLEVER.md) for specialist workflows. Machine-specific paths, addresses and deployment notes belong in the ignored `LOCAL.md` guide, when present.
 
-For the difference between a sampled **taxon** and a metadata **observation subject** (for example, a leaf), see the [lay explanation and proposed Wikidata mapping workflow](kg/OBSERVATION-SUBJECT.md). The mapping is not yet part of KG export.
+For the difference between a sampled **taxon** and a metadata **observation subject** (for example, a leaf), see the [plain-language explanation and executable reviewed Wikidata mapping workflow](kg/OBSERVATION-SUBJECT.md). Peregrino can persist the mapping and materialize its QID links in the KG.
+
+The code is available under either the [MIT license](LICENSE-MIT) or the [Apache 2.0 license](LICENSE-APACHE).
 
 *Naming note: For new species names, we take inspiration from [colonizer](https://crates.io/crates/colonizer)'s `inspire` mode, which suggests names from the Catalogue of Life, rather than inventing each crate name ourselves.*
