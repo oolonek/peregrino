@@ -7,7 +7,24 @@
 # Validate the local evidence graph, not the completeness of Wikidata items.
 kg:DatasetShape a sh:NodeShape ;
     sh:targetClass kg:Dataset ;
-    sh:property [ sh:path wdt:P356 ; sh:datatype xsd:string ; sh:minCount 1 ; sh:maxCount 1 ] .
+    sh:property [ sh:path wdt:P356 ; sh:datatype xsd:string ; sh:minCount 1 ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:observationSubjectMappingSha256 ; sh:datatype xsd:string ;
+                  sh:pattern "^[0-9a-f]{64}$" ; sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:collectorMappingSha256 ; sh:datatype xsd:string ;
+                  sh:pattern "^[0-9a-f]{64}$" ; sh:maxCount 1 ] .
+
+kg:SampleRecordShape a sh:NodeShape ;
+    sh:targetClass kg:SampleRecord ;
+    sh:property [ sh:path kg:observationSubjectText ; sh:datatype xsd:string ;
+                  sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:reportedObservationSubject ; sh:nodeKind sh:IRI ;
+                  sh:pattern "^http://www\\.wikidata\\.org/entity/Q[1-9][0-9]*$" ;
+                  sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:collectorNameText ; sh:datatype xsd:string ;
+                  sh:maxCount 1 ] ;
+    sh:property [ sh:path kg:reportedCollector ; sh:nodeKind sh:IRI ;
+                  sh:pattern "^http://www\\.wikidata\\.org/entity/Q[1-9][0-9]*$" ;
+                  sh:maxCount 1 ] .
 
 kg:AcquisitionShape a sh:NodeShape ;
     sh:targetClass kg:Acquisition ;

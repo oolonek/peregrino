@@ -12,7 +12,7 @@ use oxigraph::model::{Literal, NamedNode, Term, Triple};
 use oxigraph::sparql::QueryResults;
 use oxigraph::sparql::results::{QueryResultsFormat, QueryResultsSerializer};
 use oxigraph::store::Store;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
 use crate::artifact;
 
@@ -74,6 +74,42 @@ fn table(db: &Connection, name: &str) -> Result<bool> {
         |r| r.get::<_, bool>(0),
     )?)
 }
+fn column(db: &Connection, table_name: &str, column_name: &str) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
+        [table_name, column_name],
+        |row| row.get(0),
+    )?)
+}
+fn active_mapping(db: &Connection, dataset_id: i64, field: &str) -> Result<(Option<String>, BTreeMap<String, String>)> {
+    if !table(db, "kg_mapping_imports")? || !table(db, "kg_mapping_decisions")? {
+        return Ok((None, BTreeMap::new()));
+    }
+    let digest = db.query_row(
+        "SELECT file_sha256 FROM kg_mapping_imports
+         WHERE dataset_id=?1 AND source_field=?2 AND active=1",
+        rusqlite::params![dataset_id, field],
+        |row| row.get(0),
+    ).optional()?;
+    let mut stmt = db.prepare(
+        "SELECT decision.source_value, decision.wikidata_qid
+         FROM kg_mapping_decisions decision
+         JOIN kg_mapping_imports version ON version.id=decision.import_id
+         WHERE version.dataset_id=?1 AND version.source_field=?2 AND version.active=1",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![dataset_id, field], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut mapping = BTreeMap::new();
+    for row in rows {
+        let (source, id) = row?;
+        let item = qid(&id).with_context(|| format!("invalid reviewed QID {id:?}"))?;
+        mapping.insert(source, item);
+    }
+    Ok((digest, mapping))
+}
+
+
 
 // Ingested sample rows, not a mutable metadata file on disk, define this snapshot.
 fn sample_rows_hash(db: &Connection, dataset_id: i64) -> Result<String> {
@@ -181,23 +217,55 @@ pub fn export(database: &Path, dataset_id: i64, output: &Path) -> Result<()> {
             "http://www.wikidata.org/prop/direct/P356",
             Literal::new_simple_literal(doi.as_str()).into(),
         )?;
+        let has_subject_column: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sample_rows') WHERE name='observation_subject')",
+            [],
+            |row| row.get(0),
+        )?;
+        let (subject_digest, reviewed_subjects) = active_mapping(&db, dataset_id, "observation_subject")?;
+        if let Some(digest) = subject_digest {
+            graph.text(&dataset, "observationSubjectMappingSha256", &digest)?;
+        }
+        let (collector_digest, reviewed_collectors) = active_mapping(&db, dataset_id, "collector_full_name")?;
+        if let Some(digest) = collector_digest {
+            graph.text(&dataset, "collectorMappingSha256", &digest)?;
+        }
         let mut samples = BTreeMap::new();
-        let mut rows = db.prepare("SELECT s.row_number, s.sample_id, s.attributes_json, s.taxon_id FROM sample_rows s WHERE s.dataset_id=?1 ORDER BY s.row_number")?;
+        let rows_sql = if has_subject_column {
+            "SELECT s.row_number, s.sample_id, s.attributes_json, s.taxon_id, s.observation_subject, json_extract(s.attributes_json, '$.collector_full_name') FROM sample_rows s WHERE s.dataset_id=?1 ORDER BY s.row_number"
+        } else {
+            "SELECT s.row_number, s.sample_id, s.attributes_json, s.taxon_id, NULL, json_extract(s.attributes_json, '$.collector_full_name') FROM sample_rows s WHERE s.dataset_id=?1 ORDER BY s.row_number"
+        };
+        let mut rows = db.prepare(rows_sql)?;
         let rows = rows.query_map([dataset_id], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, Option<String>>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<i64>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
             ))
         })?;
         let has_taxa = table(&db, "taxon_resolutions")?;
         for row in rows {
-            let (number, sample_id, attributes, taxon_id) = row?;
+            let (number, sample_id, attributes, taxon_id, subject, collector) = row?;
             let sample = local(&["sample-record", &doi, &metadata_hash, &number.to_string()]);
             graph.class(&sample, "SampleRecord")?;
             graph.property(&dataset, "hasSampleRecord", &sample)?;
             graph.text(&sample, "attributesJson", &attributes)?;
+            if let Some(subject) = subject.as_deref().filter(|value| !value.trim().is_empty()) {
+                graph.text(&sample, "observationSubjectText", subject)?;
+                if let Some(item) = reviewed_subjects.get(subject) {
+                    graph.property(&sample, "reportedObservationSubject", item)?;
+                }
+            }
+            if let Some(collector) = collector.as_deref().filter(|value| !value.trim().is_empty()) {
+                graph.text(&sample, "collectorNameText", collector)?;
+                if let Some(item) = reviewed_collectors.get(collector) {
+                    graph.property(&sample, "reportedCollector", item)?;
+                }
+            }
             if let Some(id) = sample_id {
                 graph.text(&sample, "sampleIdentifier", &id)?;
             }
@@ -376,6 +444,24 @@ pub fn export(database: &Path, dataset_id: i64, output: &Path) -> Result<()> {
             })?;
             let has_features = table(&db, "annotation_features")?;
             let has_hits = table(&db, "annotation_hits")?;
+            let mut hit_sql = String::new();
+            if has_hits {
+                hit_sql.push_str("SELECT feature_id, rank, library_spectrum_id, library_inchikey, spectral_score, taxonomic_score, combined_score, rank_before_taxonomy, taxonomic_support, matches, ms1_deviation_ppm, matched_organism_name, matched_organism_wikidata, matched_shared_rank");
+                for name in [
+                    "matched_lotus_inchikey",
+                    "matched_lotus_structure_wikidata",
+                    "matched_lotus_reference_wikidata",
+                    "matched_lotus_reference_doi",
+                ] {
+                    hit_sql.push_str(", ");
+                    hit_sql.push_str(if column(&db, "annotation_hits", name)? {
+                        name
+                    } else {
+                        "NULL"
+                    });
+                }
+                hit_sql.push_str(" FROM annotation_hits WHERE run_id=?1 ORDER BY feature_id, rank");
+            }
             for run in runs {
                 let (
                     run_id,
@@ -501,7 +587,7 @@ pub fn export(database: &Path, dataset_id: i64, output: &Path) -> Result<()> {
                     }
                 }
                 if has_hits {
-                    let mut stmt = db.prepare("SELECT feature_id, rank, library_spectrum_id, library_inchikey, spectral_score, taxonomic_score, combined_score, rank_before_taxonomy, taxonomic_support, matches, ms1_deviation_ppm, matched_organism_name, matched_organism_wikidata, matched_shared_rank, matched_lotus_inchikey, matched_lotus_structure_wikidata, matched_lotus_reference_wikidata, matched_lotus_reference_doi FROM annotation_hits WHERE run_id=?1 ORDER BY feature_id, rank")?;
+                    let mut stmt = db.prepare(&hit_sql)?;
                     let hits = stmt.query_map([run_id], |r| {
                         Ok((
                             r.get::<_, String>(0)?,

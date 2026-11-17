@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use rusqlite::{Connection, params};
@@ -55,7 +55,7 @@ impl Fixture {
             CREATE TABLE chemical_entities(inchikey TEXT,wikidata_qid TEXT);
             INSERT INTO taxa VALUES(1,'Salvia officinalis');
             INSERT INTO taxon_resolutions VALUES(1,'Q111');
-            INSERT INTO sample_rows VALUES(1,1,'A',1,'{\"sample_id\":\"A\"}');
+            INSERT INTO sample_rows VALUES(1,1,'A',1,'{\"sample_id\":\"A\",\"observation_subject\":\"Leaf\",\"collector_full_name\":\"Pierre-Marie Allard\"}');
             INSERT INTO spectrum_files VALUES(1,'run.mzML',1,'run.mzML');
             INSERT INTO annotation_features VALUES(1,'1',123.45,'hits'),(1,'2',223.45,'no_hits');
             INSERT INTO annotation_hits VALUES(1,'1',1,'reference-1','AAAAAAAAAAAAAA-BBBBBBBBBB-C',0.8,9,9.8,2,'supported',8,1.25,'Salvia officinalis','http://www.wikidata.org/entity/Q999','species','AAAAAAAAAAAAAA-CCCCCCCCCC-D','http://www.wikidata.org/entity/Q333','http://www.wikidata.org/entity/Q444','10.1234/support'),
@@ -101,13 +101,16 @@ impl Fixture {
         ])
     }
     fn select(&self, sparql: &str) -> String {
+        self.select_graph(&self.graph, sparql)
+    }
+    fn select_graph(&self, graph: &Path, sparql: &str) -> String {
         let query = self.root.path().join("query.rq");
         fs::write(&query, sparql).unwrap();
         let result = cli(&[
             "kg",
             "query",
             "--graph",
-            self.graph.to_str().unwrap(),
+            graph.to_str().unwrap(),
             "--query",
             query.to_str().unwrap(),
         ]);
@@ -291,4 +294,113 @@ fn native_shacl_validation_rejects_an_export_missing_its_dataset_doi() {
         "{}",
         String::from_utf8_lossy(&nonconforming.stderr)
     );
+}
+
+#[test]
+fn a_reviewed_leaf_mapping_links_the_reported_subject_to_a_scored_candidate() {
+    let fixture = Fixture::new();
+    let mapping = fixture.root.path().join("observed-subjects.tsv");
+    fs::write(
+        &mapping,
+        "source_value\twikidata_qid\treviewer\trationale\nLeaf\tQ33971\tCurator\tBotanical leaf\n",
+    )
+    .unwrap();
+    let import_args = [
+        "kg",
+        "map",
+        "import",
+        "--db",
+        fixture.db.to_str().unwrap(),
+        "--dataset-id",
+        "1",
+        "--field",
+        "observation_subject",
+        "--file",
+        mapping.to_str().unwrap(),
+    ];
+    let applied = cli(&import_args);
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    let collector_mapping = fixture.root.path().join("collectors.tsv");
+    fs::write(&collector_mapping,
+        "source_value\twikidata_qid\treviewer\trationale\nPierre-Marie Allard\tQ56451301\tCurator\tMatched collector name and ORCID\n").unwrap();
+    let collector_args = [
+        "kg", "map", "import", "--db", fixture.db.to_str().unwrap(),
+        "--dataset-id", "1", "--field", "collector_full_name",
+        "--file", collector_mapping.to_str().unwrap(),
+    ];
+    let collector_applied = cli(&collector_args);
+    assert!(collector_applied.status.success(), "{}", String::from_utf8_lossy(&collector_applied.stderr));
+    let exported = fixture.export();
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let result = fixture.select("PREFIX k: <urn:mato:term:> SELECT ?taxon ?subject ?chemical WHERE { ?sample a k:SampleRecord ; k:reportedSourceTaxon ?taxon ; k:reportedObservationSubject ?subject ; k:hasAcquisition ?acquisition . ?acquisition k:rawFile ?raw . ?processing <http://www.w3.org/ns/prov#used> ?raw ; k:hasFeature ?feature . ?run k:derivedFrom ?processing ; k:hasCandidateHit ?hit . ?hit k:feature ?feature ; k:candidateChemical ?chemical . }");
+    assert_eq!(
+        result.lines().nth(1),
+        Some("<http://www.wikidata.org/entity/Q111>\t<http://www.wikidata.org/entity/Q33971>\t<http://www.wikidata.org/entity/Q222>"),
+        "{result}"
+    );
+    let leaf_query = include_str!("../kg/leaf-observations.rq");
+    let leaf = fixture.select(leaf_query);
+    let leaf_row: Vec<_> = leaf.lines().nth(1).expect("reviewed Leaf record").split('\t').collect();
+    assert_eq!(leaf_row[2..], [
+        "\"A\"", "\"Leaf\"", "<http://www.wikidata.org/entity/Q33971>",
+        "\"run.mzML\"", "<http://www.wikidata.org/entity/Q111>",
+        "<http://www.wikidata.org/entity/Q56451301>",
+    ]);
+    let collector = fixture.select("PREFIX k: <urn:mato:term:> SELECT ?name ?person ?subject WHERE { ?sample k:collectorNameText ?name ; k:reportedCollector ?person ; k:reportedObservationSubject ?subject }");
+    assert_eq!(collector.lines().nth(1),
+        Some("\"Pierre-Marie Allard\"\t<http://www.wikidata.org/entity/Q56451301>\t<http://www.wikidata.org/entity/Q33971>"), "{collector}");
+    let collector_audit = fixture.select("PREFIX k: <urn:mato:term:> SELECT ?digest WHERE { ?dataset a k:Dataset ; k:collectorMappingSha256 ?digest }");
+    let collector_digest = format!("\"{}\"", sha(&fs::read(&collector_mapping).unwrap()));
+    assert_eq!(collector_audit.lines().nth(1), Some(collector_digest.as_str()), "{collector_audit}");
+    let audit = fixture.select("PREFIX k: <urn:mato:term:> SELECT ?digest WHERE { ?dataset a k:Dataset ; k:observationSubjectMappingSha256 ?digest }");
+    let expected = format!("\"{}\"", sha(&fs::read(&mapping).unwrap()));
+    assert_eq!(audit.lines().nth(1), Some(expected.as_str()), "{audit}");
+    fs::write(&mapping, "source_value\twikidata_qid\treviewer\trationale\n").unwrap();
+    let withdrawn = cli(&import_args);
+    assert!(withdrawn.status.success(), "{}", String::from_utf8_lossy(&withdrawn.stderr));
+    let next_graph = fixture.root.path().join("without-review.nq");
+    let reexported = cli(&["kg", "export", "--db", fixture.db.to_str().unwrap(),
+        "--dataset-id", "1", "--out", next_graph.to_str().unwrap()]);
+    assert!(reexported.status.success(), "{}", String::from_utf8_lossy(&reexported.stderr));
+    let links = fixture.select_graph(&next_graph, "PREFIX k: <urn:mato:term:> SELECT ?subject WHERE { ?sample a k:SampleRecord ; k:reportedObservationSubject ?subject }");
+    assert_eq!(links, "?subject\n");
+    let text = fixture.select_graph(&next_graph, "PREFIX k: <urn:mato:term:> SELECT ?text WHERE { ?sample a k:SampleRecord ; k:observationSubjectText ?text }");
+    let withdrawn = fixture.select_graph(&next_graph, leaf_query);
+    assert_eq!(withdrawn.lines().count(), 1, "{withdrawn}");
+    assert_eq!(text.lines().nth(1), Some("\"Leaf\""));
+    let still_collected = fixture.select_graph(&next_graph, "PREFIX k: <urn:mato:term:> SELECT ?person WHERE { ?sample k:reportedCollector ?person }");
+    assert_eq!(still_collected.lines().nth(1), Some("<http://www.wikidata.org/entity/Q56451301>"));
+}
+
+#[test]
+fn historical_hits_without_new_lotus_columns_keep_their_scored_candidate_links() {
+    let fixture = Fixture::new();
+    let conn = Connection::open(&fixture.db).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE annotation_hits DROP COLUMN matched_lotus_inchikey;
+         ALTER TABLE annotation_hits DROP COLUMN matched_lotus_structure_wikidata;
+         ALTER TABLE annotation_hits DROP COLUMN matched_lotus_reference_wikidata;
+         ALTER TABLE annotation_hits DROP COLUMN matched_lotus_reference_doi;",
+    )
+    .unwrap();
+    let result = fixture.export();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let scored = fixture.select("PREFIX k: <urn:mato:term:> SELECT ?chemical ?score ?support WHERE { ?hit k:candidateChemical ?chemical ; k:spectralScore ?score . OPTIONAL { ?hit k:matchedLotusStructure ?support } }");
+    assert!(
+        scored.contains("<http://www.wikidata.org/entity/Q222>\t\"0.8\"^^<http://www.w3.org/2001/XMLSchema#double>\t"),
+        "{scored}"
+    );
+    assert_eq!(scored.lines().count(), 2, "{scored}");
 }

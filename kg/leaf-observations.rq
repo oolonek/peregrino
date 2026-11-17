@@ -1,0 +1,17 @@
+PREFIX kg: <urn:mato:term:>
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+# Only reviewed, imported, re-exported observation-subject mappings produce rows.
+# A sample record is metadata, not a physical leaf or evidence of chemical presence.
+SELECT ?doi ?sample ?sampleId ?sourceText ?organ ?rawFilename ?taxon ?collector WHERE {
+  VALUES ?organ { wd:Q33971 }
+  ?dataset wdt:P356 ?doi ; kg:hasSampleRecord ?sample .
+  ?sample kg:observationSubjectText ?sourceText ;
+          kg:reportedObservationSubject ?organ ;
+          kg:hasAcquisition ?acquisition .
+  ?acquisition kg:rawFile ?raw .
+  ?raw kg:filename ?rawFilename .
+  OPTIONAL { ?sample kg:sampleIdentifier ?sampleId . }
+  OPTIONAL { ?sample kg:reportedSourceTaxon ?taxon . }
+  OPTIONAL { ?sample kg:reportedCollector ?collector . }
+} ORDER BY ?sample ?rawFilename LIMIT 200

@@ -1,0 +1,25 @@
+PREFIX kg: <urn:mato:term:>
+PREFIX prov: <http://www.w3.org/ns/prov#>
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+# Change the QID to another approved observation-subject mapping as needed.
+# Candidates are ranked evidence, not confirmed metabolite presence.
+SELECT ?doi ?sampleId ?subjectText ?subject ?taxon ?rawFilename
+       ?featureId ?mz ?rtSeconds ?chemical ?spectralScore WHERE {
+  VALUES ?subject { wd:Q33971 }
+  ?dataset wdt:P356 ?doi ; kg:hasSampleRecord ?sample .
+  ?sample kg:reportedObservationSubject ?subject ;
+          kg:observationSubjectText ?subjectText ;
+          kg:hasAcquisition ?acquisition .
+  OPTIONAL { ?sample kg:sampleIdentifier ?sampleId . }
+  OPTIONAL { ?sample kg:reportedSourceTaxon ?taxon . }
+  ?acquisition kg:rawFile ?raw .
+  ?raw kg:filename ?rawFilename .
+  ?processing prov:used ?raw ; kg:hasFeature ?feature .
+  ?feature kg:featureIdentifier ?featureId ; kg:precursorMz ?mz ;
+           kg:retentionTimeSeconds ?rtSeconds .
+  ?run kg:derivedFrom ?processing ; kg:hasCandidateHit ?hit .
+  ?hit kg:feature ?feature ; kg:candidateChemical ?chemical ;
+       kg:spectralScore ?spectralScore .
+  FILTER(?spectralScore > 0.7)
+} ORDER BY DESC(?spectralScore) ?sampleId ?featureId LIMIT 100

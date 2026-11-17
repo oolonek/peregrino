@@ -3,6 +3,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use diesel::prelude::*;
+use diesel::connection::SimpleConnection;
 use diesel::sql_types::{BigInt, Text};
 
 #[derive(QueryableByName, Debug, PartialEq, Eq)]
@@ -21,6 +22,23 @@ struct StoredSpectrum {
 struct Count {
     #[diesel(sql_type = BigInt)]
     count: i64,
+}
+
+#[derive(QueryableByName)]
+struct SubjectRow {
+    #[diesel(sql_type = diesel::sql_types::Nullable<Text>)]
+    observation_subject: Option<String>,
+    #[diesel(sql_type = Text)]
+    attributes_json: String,
+}
+
+fn subjects(db: &Path) -> Vec<SubjectRow> {
+    let mut conn = SqliteConnection::establish(db.to_str().unwrap()).unwrap();
+    diesel::sql_query(
+        "SELECT row_number, observation_subject, attributes_json FROM sample_rows ORDER BY row_number",
+    )
+    .load(&mut conn)
+    .unwrap()
 }
 
 fn dataset(root: &Path, contents: &str) {
@@ -120,6 +138,64 @@ fn imports_validated_rows_with_nested_spectrum_paths_and_original_attributes() {
     let attributes: serde_json::Value = serde_json::from_str(&rows[1].attributes_json).unwrap();
     assert_eq!(attributes["organism"], "Fungi");
     assert_eq!(attributes["negative"], "b.mzML");
+}
+
+#[test]
+fn promotes_original_subject_without_changing_json_or_missing_field() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("subjects.sqlite");
+    dataset(
+        temp.path(),
+        "sample_id\tpositive\tnegative\tobservation_subject\nA\ta.mzXML\t\tLeaf\nB\t\tb.mzML\t\n",
+    );
+    let output = ingest(temp.path(), &db);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let rows = subjects(&db);
+    assert_eq!(rows[0].observation_subject.as_deref(), Some("Leaf"));
+    assert_eq!(rows[1].observation_subject, None);
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&rows[0].attributes_json).unwrap()["observation_subject"], "Leaf");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&rows[1].attributes_json).unwrap()["observation_subject"], "");
+
+    dataset(temp.path(), "sample_id\tpositive\tnegative\nA\ta.mzXML\t\nB\t\tb.mzML\n");
+    let output = ingest(temp.path(), &db);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let rows = subjects(&db);
+    assert_eq!(rows[0].observation_subject, None);
+    assert!(serde_json::from_str::<serde_json::Value>(&rows[0].attributes_json).unwrap().get("observation_subject").is_none());
+}
+
+#[test]
+fn ingest_backfills_legacy_subjects_and_preserves_original_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("legacy.sqlite");
+    let mut conn = SqliteConnection::establish(db.to_str().unwrap()).unwrap();
+    conn.batch_execute(
+        "CREATE TABLE datasets (id INTEGER PRIMARY KEY, doi TEXT NOT NULL, root TEXT NOT NULL, metadata_path TEXT NOT NULL, ms_dir TEXT NOT NULL, UNIQUE (doi, root));
+         CREATE TABLE sample_rows (dataset_id INTEGER NOT NULL REFERENCES datasets(id) ON DELETE CASCADE, row_number INTEGER NOT NULL, sample_id TEXT, attributes_json TEXT NOT NULL CHECK (json_valid(attributes_json)), PRIMARY KEY (dataset_id, row_number));
+         INSERT INTO datasets VALUES (1, 'legacy', '/legacy', '/legacy/metadata', '/legacy/ms');
+         INSERT INTO sample_rows VALUES (1, 1, 'A', '{\"observation_subject\":\"Leaf\",\"other\":\"kept\"}');
+         INSERT INTO sample_rows VALUES (1, 2, 'B', '{\"observation_subject\":\"\"}');
+         INSERT INTO sample_rows VALUES (1, 3, 'C', '{\"other\":\"missing\"}');",
+    ).unwrap();
+    drop(conn);
+    dataset(temp.path(), "sample_id\tpositive\tnegative\nA\ta.mzXML\t\nB\t\tb.mzML\n");
+    let output = ingest(temp.path(), &db);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let mut conn = SqliteConnection::establish(db.to_str().unwrap()).unwrap();
+    let legacy: Vec<SubjectRow> = diesel::sql_query(
+        "SELECT row_number, observation_subject, attributes_json FROM sample_rows WHERE dataset_id = 1 ORDER BY row_number",
+    ).load(&mut conn).unwrap();
+    assert_eq!(legacy.len(), 3);
+    assert_eq!(legacy[0].observation_subject.as_deref(), Some("Leaf"));
+    assert_eq!(legacy[1].observation_subject, None);
+    assert_eq!(legacy[2].observation_subject, None);
+    assert_eq!(legacy[0].attributes_json, r#"{"observation_subject":"Leaf","other":"kept"}"#);
+    assert_eq!(legacy[1].attributes_json, r#"{"observation_subject":""}"#);
+    assert_eq!(legacy[2].attributes_json, r#"{"other":"missing"}"#);
+    let imported_subject: Option<String> = diesel::sql_query(
+        "SELECT row_number, observation_subject, attributes_json FROM sample_rows WHERE dataset_id = 2 AND row_number = 1",
+    ).get_result::<SubjectRow>(&mut conn).unwrap().observation_subject;
+    assert_eq!(imported_subject, None);
 }
 
 #[test]

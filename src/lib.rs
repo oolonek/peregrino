@@ -6,6 +6,7 @@ pub mod inspect;
 pub mod kg;
 pub mod kg_validation;
 pub mod register;
+pub mod mapping;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -47,6 +48,25 @@ struct DatasetId {
 struct ColumnCount {
     #[diesel(sql_type = BigInt)]
     count: i64,
+}
+
+/// Add the typed subject on older databases without changing the source JSON.
+pub(crate) fn ensure_observation_subject_column(conn: &mut SqliteConnection) -> Result<()> {
+    let present = diesel::sql_query(
+        "SELECT COUNT(*) AS count FROM pragma_table_info('sample_rows') WHERE name = 'observation_subject'",
+    )
+    .get_result::<ColumnCount>(conn)?
+    .count != 0;
+    if !present {
+        conn.transaction::<(), anyhow::Error, _>(|conn| {
+            conn.batch_execute("ALTER TABLE sample_rows ADD COLUMN observation_subject TEXT")?;
+            conn.batch_execute(
+                "UPDATE sample_rows SET observation_subject = NULLIF(json_extract(attributes_json, '$.observation_subject'), '')",
+            )?;
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 #[derive(QueryableByName)]
@@ -102,6 +122,7 @@ CREATE TABLE IF NOT EXISTS sample_rows (
     row_number INTEGER NOT NULL,
     sample_id TEXT,
     taxon_id INTEGER REFERENCES taxa(id),
+    observation_subject TEXT,
     attributes_json TEXT NOT NULL CHECK (json_valid(attributes_json)),
     PRIMARY KEY (dataset_id, row_number)
 );
@@ -199,6 +220,7 @@ pub fn ingest(options: &IngestOptions) -> Result<Counts> {
         bail!("metadata headers must be nonempty and unique");
     }
     let sample_id_index = headers.iter().position(|h| h == "sample_id");
+    let observation_subject_index = headers.iter().position(|h| h == "observation_subject");
     let taxon_index = headers
         .iter()
         .position(|header| header == options.taxon_column.as_str())
@@ -215,6 +237,7 @@ pub fn ingest(options: &IngestOptions) -> Result<Counts> {
         SqliteConnection::establish(text(&options.database)?).context("open SQLite database")?;
     db.batch_execute("PRAGMA foreign_keys = ON;")?;
     db.batch_execute(SCHEMA)?;
+    ensure_observation_subject_column(&mut db)?;
     let taxon_column = diesel::sql_query(
         "SELECT COUNT(*) AS count FROM pragma_table_info('sample_rows') WHERE name = 'taxon_id'",
     )
@@ -277,13 +300,16 @@ pub fn ingest(options: &IngestOptions) -> Result<Counts> {
             let attributes: Map<String, Value> = headers.iter().zip(record.iter())
                 .map(|(name, value)| (name.to_owned(), Value::String(value.to_owned()))).collect();
             let json = serde_json::to_string(&attributes)?;
-            diesel::sql_query("INSERT INTO sample_rows (dataset_id, row_number, sample_id, taxon_id, attributes_json) VALUES (?, ?, ?, ?, ?)")
+            diesel::sql_query("INSERT INTO sample_rows (dataset_id, row_number, sample_id, taxon_id, observation_subject, attributes_json) VALUES (?, ?, ?, ?, ?, ?)")
                 .bind::<BigInt, _>(id)
                 .bind::<BigInt, _>(row_number)
                 .bind::<diesel::sql_types::Nullable<Text>, _>(sample_id_index
                     .and_then(|i| record.get(i))
                     .filter(|sample| !sample.trim().is_empty()))
                 .bind::<diesel::sql_types::Nullable<BigInt>, _>(taxon_id)
+                .bind::<diesel::sql_types::Nullable<Text>, _>(observation_subject_index
+                    .and_then(|i| record.get(i))
+                    .filter(|subject| !subject.is_empty()))
                 .bind::<Text, _>(&json)
                 .execute(conn)?;
             for &index in &checked.filename_columns {

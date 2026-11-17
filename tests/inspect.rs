@@ -65,21 +65,18 @@ fn lists_user_tables_and_previews_a_bounded_number_of_rows() {
     let mut tsv = csv::ReaderBuilder::new()
         .delimiter(b'\t')
         .from_reader(preview.stdout.as_slice());
-    assert_eq!(
-        tsv.headers().unwrap().iter().collect::<Vec<_>>(),
-        [
-            "dataset_id",
-            "row_number",
-            "sample_id",
-            "taxon_id",
-            "attributes_json"
-        ]
-    );
+    let headers = tsv.headers().unwrap().clone();
+    let sample_id = headers.iter().position(|name| name == "sample_id").unwrap();
+    let attributes = headers
+        .iter()
+        .position(|name| name == "attributes_json")
+        .unwrap();
     let rows = tsv.records().map(Result::unwrap).collect::<Vec<_>>();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get(2), Some("A"));
+    assert_eq!(rows[0].get(sample_id), Some("A"));
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(rows[0].get(4).unwrap()).unwrap()["filename"],
+        serde_json::from_str::<serde_json::Value>(rows[0].get(attributes).unwrap()).unwrap()
+            ["filename"],
         "a.mzXML"
     );
 }

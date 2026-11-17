@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use peregrino::annotations::{AnnotationCommand, run as run_annotations};
 use peregrino::inspect::{list_tables, write_table};
 use peregrino::kg;
+use peregrino::mapping;
 use peregrino::kg_validation;
 use peregrino::register::{RegisterOptions, register};
 use peregrino::{IngestOptions, ingest, metadata_headers};
@@ -111,6 +112,26 @@ enum KgCommand {
         graph: PathBuf,
         #[arg(long)]
         query: PathBuf,
+    },
+    /// Import audited, dataset-scoped Wikidata mappings.
+    Map {
+        #[command(subcommand)]
+        command: KgMapCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum KgMapCommand {
+    /// Import reviewed observation subjects or collector names and their Wikidata identities.
+    Import {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        dataset_id: i64,
+        #[arg(long)]
+        field: String,
+        #[arg(long)]
+        file: PathBuf,
     },
 }
 
@@ -236,6 +257,16 @@ fn main() -> anyhow::Result<()> {
             KgCommand::Export { db, dataset_id, out } => kg::export(&db, dataset_id, &out)?,
             KgCommand::Validate { graph } => kg_validation::validate(&graph)?,
             KgCommand::Query { graph, query } => kg::query(&graph, &query, std::io::stdout().lock())?,
+            KgCommand::Map { command } => match command {
+                KgMapCommand::Import { db, dataset_id, field, file } => {
+                    let report = mapping::import(&db, dataset_id, &field, &file)?;
+                    let status = if report.unchanged { "unchanged" } else { "activated" };
+                    println!(
+                        "Mapping import {status}: version={} sha256={} rows={}",
+                        report.version, report.sha256, report.rows
+                    );
+                }
+            },
         },
     }
     Ok(())

@@ -1,0 +1,10 @@
+PREFIX kg: <urn:mato:term:>
+PREFIX wd: <http://www.wikidata.org/entity/>
+
+SELECT ?sample ?name ?subject WHERE {
+  ?sample a kg:SampleRecord ;
+          kg:collectorNameText ?name ;
+          kg:reportedCollector wd:Q56451301 .
+  OPTIONAL { ?sample kg:reportedObservationSubject ?subject }
+}
+ORDER BY ?sample
